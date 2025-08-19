@@ -1,29 +1,18 @@
-@EndUserText.label: 'Parameters for Barcode Generation (MM)'
-define abstract entity ZMM_A_Barcode_Details
+@EndUserText.label: 'Utility CDS for Capturing Domain Values'
+@ObjectModel.resultSet.sizeCategory: #XS
+@ObjectModel.query.implementedBy: 'ABAP:ZCL_GET_DOMAIN_FIXED_VALUES'
+define custom entity ZDT_I_Domain_Fixed_Values
 {
-  @EndUserText.label: 'Serial Number'
-  serialnumber   : serge;
-  @EndUserText.label: 'Batch ID'
-  batch          : charg_d;
-  @EndUserText.label: 'Expiry Date'
-  expirydate     : abap.dats;
-  @EndUserText.label: 'Quantity'
-  quantity       : abap.dec( 10, 3 );
-  @EndUserText.label: 'Unit of Measure'
-  unitofmeasure  : meinh;
-  @EndUserText.label: 'Number of Copies'
-  numberofcopies : abap.numc( 2 );
-  @EndUserText.label: 'Barcode Type'
-  @Consumption.valueHelpDefinition: [{  
-  entity: { 
-      name : 'ZDT_I_DOMAIN_FIXED_VALUES' ,
-      element: 'low' } ,
-      additionalBinding: [{ 
-        element: 'domain_name',
-        localConstant: 'ZDE_BC_TYPE',
-        usage: #FILTER 
-      }],
-      distinctValues: true
-  }]
-  barcodetype    : zde_bc_type;
+      @EndUserText.label     : 'Domain Name'
+      @UI.hidden  : true
+  key domain_name : sxco_ad_object_name;
+      @UI.hidden  : true
+  key pos         : abap.numc( 4 );
+      @EndUserText.label     : 'lower_limit'
+      low         : abap.char( 10 );
+      @EndUserText.label     : 'upper_limit'
+      high        : abap.char(10);
+      @EndUserText.label     : 'Description'
+      description : abap.char(60);
+
 }
