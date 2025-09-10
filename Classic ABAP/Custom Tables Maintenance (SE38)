@@ -1,0 +1,12 @@
+*&---------------------------------------------------------------------*
+*& Report ZDT_CUSTOM_TABLES_MAINTENANCE
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zdt_custom_tables_maintenance.
+
+INITIALIZATION.
+  DATA(go_main) = zcl_custom_tables_maintenance=>get_instance( CONV #( sy-uname ) ).
+
+START-OF-SELECTION.
+  go_main->display_list_of_tables(  ).
