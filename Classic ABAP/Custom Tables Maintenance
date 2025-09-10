@@ -1,0 +1,377 @@
+CLASS zcl_custom_tables_maintenance DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+
+    " Static Methods
+    CLASS-METHODS:
+      get_instance
+        IMPORTING
+          im_v_user        TYPE bname
+        RETURNING
+          VALUE(re_object) TYPE REF TO zcl_custom_tables_maintenance.
+
+    " Instance Methods
+    METHODS:
+      display_list_of_tables.
+
+  PROTECTED SECTION.
+  PRIVATE SECTION.
+
+    " Structures
+    TYPES:
+      BEGIN OF ls_main_alv,
+        tables       TYPE zdt_ztabs_maint,
+        button_field TYPE icon-id,
+      END OF ls_main_alv,
+
+      ltt_main_alv TYPE STANDARD TABLE OF ls_main_alv
+                   WITH DEFAULT KEY.
+
+    CLASS-DATA:
+      object_reference TYPE REF TO zcl_custom_tables_maintenance,
+      user_id          TYPE bname.
+
+    DATA:
+      lt_popup_data   TYPE REF TO data,
+      lo_popup_alv    TYPE REF TO cl_salv_table,
+      lt_output_table TYPE ltt_main_alv,
+      lv_tabname      TYPE tabname.
+
+    CONSTANTS:
+      BEGIN OF lc_message_types,
+        error       TYPE c VALUE 'E',
+        success     TYPE c VALUE 'S',
+        information TYPE c VALUE 'I',
+      END OF lc_message_types.
+
+    METHODS:
+      get_data
+        RETURNING
+          VALUE(re_list) TYPE ltt_main_alv,
+
+      display_main_alv
+        IMPORTING
+          im_t_output_table TYPE ANY TABLE,
+
+      display_popup_alv
+        IMPORTING
+          im_v_table_name TYPE tabname,
+
+      button_click
+        FOR EVENT link_click OF cl_salv_events_table
+        IMPORTING
+          row
+          column,
+
+      get_user_command
+        FOR EVENT added_function OF cl_salv_events_table,
+
+      set_popup_data_to_editable.
+
+ENDCLASS.
+
+
+
+CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
+
+  METHOD get_instance.
+
+    IF re_object IS NOT BOUND.
+
+      CREATE OBJECT object_reference.
+
+      " Initialize other value/s
+      user_id = im_v_user.
+
+    ENDIF.
+
+    re_object = object_reference.
+
+  ENDMETHOD.
+
+  METHOD display_list_of_tables.
+
+    " Get data
+    DATA(lt_list) = get_data( ).
+
+    " Build + Display ALV
+    IF lt_list IS NOT INITIAL.
+      display_main_alv( lt_list ).
+    ELSE.
+
+      MESSAGE |No hits found!|
+      TYPE lc_message_types-information
+      DISPLAY LIKE lc_message_types-error.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_data.
+
+    SELECT FROM zdt_ztabs_maint
+        FIELDS *
+        WHERE user_id = @user_id
+        INTO TABLE @re_list.
+
+  ENDMETHOD.
+
+  METHOD display_main_alv.
+
+    DATA: lo_main_alv   TYPE REF TO cl_salv_table,
+          lo_columns    TYPE REF TO cl_salv_columns_list,
+          lo_column     TYPE REF TO cl_salv_column_table,
+          lo_selections TYPE REF TO cl_salv_selections,
+          lo_events     TYPE REF TO cl_salv_events_table.
+
+    lt_output_table = VALUE ltt_main_alv(
+            FOR <lfs_rows>
+            IN im_t_output_table
+            ( tables = <lfs_rows> button_field = '@0Z@' )
+        ).
+
+    TRY.
+
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table = lo_main_alv
+          CHANGING
+            t_table      = lt_output_table
+        ).
+
+      CATCH cx_salv_msg INTO DATA(lx_salv_msg).
+        MESSAGE lx_salv_msg TYPE lc_message_types-error.
+    ENDTRY.
+
+    DATA(lo_display_settings) = lo_main_alv->get_display_settings( ).
+    lo_display_settings->set_striped_pattern( abap_true ). " Enable zebra pattern
+
+    TRY.
+        " ALV Columns Settings
+        lo_columns = lo_main_alv->get_columns( ).
+
+        lo_column ?= lo_columns->get_column( 'TABLES-USER_ID' ).
+        lo_column->set_technical( abap_true ).
+
+        lo_column ?= lo_columns->get_column( 'TABLES-CLIENT' ).
+        lo_column->set_technical( abap_true ).
+
+        lo_column ?= lo_columns->get_column( 'TABLES-TABLE_NAME' ).
+        lo_column->set_output_length( 16 ).
+
+        " Set up Button
+        lo_column ?= lo_columns->get_column( 'BUTTON_FIELD' ).
+        lo_column->set_icon( abap_true ).
+        lo_column->set_cell_type( if_salv_c_cell_type=>button ).
+        lo_column->set_output_length( 8 ).
+        lo_column->set_short_text( 'Update' ).
+        lo_column->set_medium_text( 'Open Table' ).
+        lo_column->set_long_text( 'Open Table for Update' ).
+
+        " Selection Settings
+        lo_selections = lo_main_alv->get_selections( ).
+        lo_selections->set_selection_mode( if_salv_c_selection_mode=>cell ).
+
+        " Event Handlers
+        lo_events = lo_main_alv->get_event(  ).
+
+        SET HANDLER button_click FOR lo_events.
+
+      CATCH cx_salv_not_found.
+        " Error Handling here...
+    ENDTRY.
+
+    " Display
+    lo_main_alv->display( ).
+
+  ENDMETHOD.
+
+  METHOD button_click.
+
+    " Initialize
+    FREE: lo_popup_alv,
+          lt_popup_data.
+
+    " Get the Selected Table
+    ASSIGN lt_output_table[ row ] TO FIELD-SYMBOL(<lfs_table>).
+
+    IF sy-subrc IS INITIAL.
+      display_popup_alv( <lfs_table>-tables-table_name ).
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD display_popup_alv.
+
+    FIELD-SYMBOLS: <lt_table_popup> TYPE STANDARD TABLE.
+
+    DATA:
+      lo_columns   TYPE REF TO cl_salv_columns_table,
+      lo_functions TYPE REF TO cl_salv_functions,
+      lo_events    TYPE REF TO cl_salv_events_table.
+
+    lv_tabname = im_v_table_name.
+
+    " Create typed table
+    IF lt_popup_data IS NOT BOUND.
+      CREATE DATA lt_popup_data TYPE STANDARD TABLE OF (im_v_table_name).
+    ENDIF.
+
+    " Assign to dynamic field symbol
+    ASSIGN lt_popup_data->* TO <lt_table_popup>.
+
+    IF <lt_table_popup> IS INITIAL.
+
+      " Get the results
+      SELECT FROM (im_v_table_name)
+        FIELDS *
+        INTO TABLE @<lt_table_popup>.
+
+    ENDIF.
+
+    TRY.
+
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table = lo_popup_alv
+          CHANGING
+            t_table      = <lt_table_popup>
+        ).
+
+        " ALV Columns Settings
+        lo_columns = lo_popup_alv->get_columns( ).
+        lo_columns->set_optimize( abap_true ).
+
+        " Functions
+        lo_functions = lo_popup_alv->get_functions( ).
+
+        " Custom PF Status
+        lo_popup_alv->set_screen_status(
+            EXPORTING
+                report = sy-cprog
+                pfstatus = 'ZSTANDARD'
+                set_functions = cl_salv_table=>c_functions_all
+        ).
+
+        " Event handlers
+        lo_events = lo_popup_alv->get_event( ).
+        SET HANDLER get_user_command FOR lo_events.
+
+        " ALV Customization
+        set_popup_data_to_editable( ).
+
+        " Dumps
+      CATCH cx_salv_msg INTO DATA(lx_salv_msg).
+        MESSAGE lx_salv_msg TYPE lc_message_types-error.
+      CATCH cx_salv_not_found INTO DATA(lx_salv_not_found).
+        MESSAGE lx_salv_not_found TYPE lc_message_types-error.
+      CATCH cx_salv_object_not_found INTO DATA(lx_salv_object_not_found).
+        MESSAGE lx_salv_object_not_found TYPE lc_message_types-error.
+    ENDTRY.
+
+    DATA(lo_display_settings) = lo_popup_alv->get_display_settings( ).
+    lo_display_settings->set_striped_pattern( abap_true ). " Enable zebra pattern
+
+    " Pop-up window settings
+    lo_popup_alv->set_screen_popup(
+      start_column = 10
+      end_column   = 150 " Pop-up width
+      start_line   = 5
+      end_line     = 20
+    ).
+
+    " Display
+    lo_popup_alv->display( ).
+
+  ENDMETHOD.
+
+  METHOD get_user_command.
+
+    FIELD-SYMBOLS: <lt_table_popup> TYPE STANDARD TABLE.
+
+    DATA: lo_api  TYPE REF TO if_salv_gui_om_extend_grid_api,
+          lo_edit TYPE REF TO if_salv_gui_om_edit_restricted.
+
+    CASE sy-ucomm.
+
+      WHEN '&MDFY'.
+
+        " Get the current data and add a new row
+        ASSIGN lt_popup_data->* TO <lt_table_popup>.
+        APPEND INITIAL LINE TO <lt_table_popup> ASSIGNING FIELD-SYMBOL(<lfs_new_entry>).
+
+        lo_popup_alv->refresh( ).
+
+      WHEN '&CXSV'.
+
+        " Get the current data
+        ASSIGN lt_popup_data->* TO <lt_table_popup>.
+
+        lo_api = lo_popup_alv->extended_grid_api( ).
+        lo_edit = lo_api->editable_restricted( ).
+
+        " Validate
+        lo_edit->validate_changed_data( IMPORTING is_input_data_valid = DATA(lv_result) ).
+
+        " Modify the Table
+        IF lv_result EQ abap_true.
+
+          MODIFY (lv_tabname) FROM TABLE <lt_table_popup>.
+
+          MESSAGE 'Changes saved!'
+          TYPE lc_message_types-information
+          DISPLAY LIKE lc_message_types-success.
+
+          FREE: <lt_table_popup>.
+
+          " Get the results from modified data
+          SELECT FROM (lv_tabname)
+            FIELDS *
+            INTO TABLE @<lt_table_popup>.
+
+          lo_popup_alv->refresh( ).
+
+        ENDIF.
+
+    ENDCASE.
+
+  ENDMETHOD.
+
+  METHOD set_popup_data_to_editable.
+
+    FIELD-SYMBOLS: <lt_table_popup> TYPE STANDARD TABLE.
+
+    DATA: lo_table_description TYPE REF TO cl_abap_tabledescr,
+          lo_structure         TYPE REF TO cl_abap_structdescr,
+          lt_components        TYPE abap_compdescr_tab.
+
+    " Get the current data
+    ASSIGN lt_popup_data->* TO <lt_table_popup>.
+
+    " Get the field names
+    lo_table_description ?= cl_abap_typedescr=>describe_by_data( <lt_table_popup> ).
+    lo_structure ?= lo_table_description->get_table_line_type( ).
+
+    LOOP AT lo_structure->components[] ASSIGNING FIELD-SYMBOL(<lfs_components>).
+
+      TRY.
+
+          " Set Column to Editable
+          lo_popup_alv->extended_grid_api( )->editable_restricted( )->set_attributes_for_columnname(
+              EXPORTING
+                  columnname = <lfs_components>-name
+                  all_cells_input_enabled = abap_true
+          ).
+
+        CATCH cx_salv_not_found INTO DATA(lx_salv_not_found).
+          " Do Nothing
+      ENDTRY.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
+ENDCLASS.
