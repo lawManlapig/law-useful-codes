@@ -23,8 +23,9 @@ CLASS zcl_custom_tables_maintenance DEFINITION
     " Structures
     TYPES:
       BEGIN OF ls_main_alv,
-        tables       TYPE zdt_ztabs_maint,
-        button_field TYPE icon-id,
+        tables        TYPE zdt_ztabs_maint,
+        create_button TYPE icon-id,
+        update_button TYPE icon-id,
       END OF ls_main_alv,
 
       ltt_main_alv TYPE STANDARD TABLE OF ls_main_alv
@@ -35,17 +36,23 @@ CLASS zcl_custom_tables_maintenance DEFINITION
       user_id          TYPE bname.
 
     DATA:
-      lt_popup_data   TYPE REF TO data,
-      lo_popup_alv    TYPE REF TO cl_salv_table,
-      lt_output_table TYPE ltt_main_alv,
-      lv_tabname      TYPE tabname.
+      lt_popup_data     TYPE REF TO data,
+      lo_popup_alv      TYPE REF TO cl_salv_table,
+      lt_output_table   TYPE ltt_main_alv,
+      lv_tabname        TYPE tabname,
+      lv_button_pressed TYPE string.
 
     CONSTANTS:
       BEGIN OF lc_message_types,
         error       TYPE c VALUE 'E',
         success     TYPE c VALUE 'S',
         information TYPE c VALUE 'I',
-      END OF lc_message_types.
+      END OF lc_message_types,
+
+      BEGIN OF lc_buttons,
+        create TYPE c LENGTH 13 VALUE 'CREATE_BUTTON',
+        update TYPE c LENGTH 13 VALUE 'UPDATE_BUTTON',
+      END OF lc_buttons.
 
     METHODS:
       get_data
@@ -130,8 +137,11 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
     lt_output_table = VALUE ltt_main_alv(
             FOR <lfs_rows>
             IN im_t_output_table
-            ( tables = <lfs_rows> button_field = '@0Z@' )
-        ).
+            (
+                tables = <lfs_rows>
+                create_button = '@0Y@'
+                update_button = '@0Z@'
+            ) ).
 
     TRY.
 
@@ -163,13 +173,15 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
         lo_column->set_output_length( 16 ).
 
         " Set up Button
-        lo_column ?= lo_columns->get_column( 'BUTTON_FIELD' ).
+        lo_column ?= lo_columns->get_column( 'UPDATE_BUTTON' ).
         lo_column->set_icon( abap_true ).
         lo_column->set_cell_type( if_salv_c_cell_type=>button ).
-        lo_column->set_output_length( 8 ).
-        lo_column->set_short_text( 'Update' ).
-        lo_column->set_medium_text( 'Open Table' ).
-        lo_column->set_long_text( 'Open Table for Update' ).
+        lo_column->set_output_length( 4 ).
+
+        lo_column ?= lo_columns->get_column( 'CREATE_BUTTON' ).
+        lo_column->set_icon( abap_true ).
+        lo_column->set_cell_type( if_salv_c_cell_type=>button ).
+        lo_column->set_output_length( 4 ).
 
         " Selection Settings
         lo_selections = lo_main_alv->get_selections( ).
@@ -199,7 +211,10 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
     ASSIGN lt_output_table[ row ] TO FIELD-SYMBOL(<lfs_table>).
 
     IF sy-subrc IS INITIAL.
-      display_popup_alv( <lfs_table>-tables-table_name ).
+
+      lv_button_pressed = column.
+      display_popup_alv( im_v_table_name = <lfs_table>-tables-table_name ).
+
     ENDIF.
 
   ENDMETHOD.
@@ -225,10 +240,16 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
 
     IF <lt_table_popup> IS INITIAL.
 
-      " Get the results
-      SELECT FROM (im_v_table_name)
-        FIELDS *
-        INTO TABLE @<lt_table_popup>.
+      IF lv_button_pressed EQ lc_buttons-create.
+        APPEND INITIAL LINE TO <lt_table_popup>.
+      ELSEIF lv_button_pressed EQ lc_buttons-update.
+
+        " Get the results only if for Update/Modification
+        SELECT FROM (im_v_table_name)
+          FIELDS *
+          INTO TABLE @<lt_table_popup>.
+
+      ENDIF.
 
     ENDIF.
 
@@ -252,13 +273,17 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
         lo_popup_alv->set_screen_status(
             EXPORTING
                 report = sy-cprog
-                pfstatus = 'ZSTANDARD'
+                pfstatus = COND #( WHEN lv_button_pressed EQ lc_buttons-create THEN 'ZSTANDARD' ELSE 'ZSTANDARD_MODIFY' )
                 set_functions = cl_salv_table=>c_functions_all
         ).
 
         " Event handlers
         lo_events = lo_popup_alv->get_event( ).
         SET HANDLER get_user_command FOR lo_events.
+
+        " Set listener
+        DATA(lo_listener) = NEW lcl_listener( ).
+        lo_popup_alv->extended_grid_api( )->editable_restricted( )->set_listener( lo_listener ).
 
         " ALV Customization
         set_popup_data_to_editable( ).
@@ -283,6 +308,9 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
       end_line     = 20
     ).
 
+    " Sort before display
+    SORT <lt_table_popup>.
+
     " Display
     lo_popup_alv->display( ).
 
@@ -290,10 +318,15 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
 
   METHOD get_user_command.
 
-    FIELD-SYMBOLS: <lt_table_popup> TYPE STANDARD TABLE.
+    DATA: lt_delete_table TYPE REF TO data,
+          lt_rows         TYPE salv_t_row,
+          lv_answer       TYPE string.
 
-    DATA: lo_api  TYPE REF TO if_salv_gui_om_extend_grid_api,
-          lo_edit TYPE REF TO if_salv_gui_om_edit_restricted.
+    FIELD-SYMBOLS:
+      <lt_table_popup>  TYPE STANDARD TABLE,
+      <lt_delete_table> TYPE STANDARD TABLE.
+
+    DATA(lo_selections) = lo_popup_alv->get_selections( ).
 
     CASE sy-ucomm.
 
@@ -310,11 +343,11 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
         " Get the current data
         ASSIGN lt_popup_data->* TO <lt_table_popup>.
 
-        lo_api = lo_popup_alv->extended_grid_api( ).
-        lo_edit = lo_api->editable_restricted( ).
-
         " Validate
-        lo_edit->validate_changed_data( IMPORTING is_input_data_valid = DATA(lv_result) ).
+        lo_popup_alv->extended_grid_api( )->editable_restricted( )->validate_changed_data(
+            IMPORTING
+                is_input_data_valid = DATA(lv_result)
+        ).
 
         " Modify the Table
         IF lv_result EQ abap_true.
@@ -332,7 +365,86 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
             FIELDS *
             INTO TABLE @<lt_table_popup>.
 
-          lo_popup_alv->refresh( ).
+          IF lv_button_pressed EQ lc_buttons-create.
+            lo_popup_alv->close_screen( ).
+          ELSE.
+            lo_popup_alv->refresh( ).
+          ENDIF.
+
+        ENDIF.
+
+      WHEN '&CXDL'.
+
+        CALL FUNCTION 'POPUP_TO_CONFIRM'
+          EXPORTING
+            titlebar              = 'Confirmation'
+            text_question         = 'Are you sure you want to delete the entries?'
+            text_button_1         = 'Yes'
+            text_button_2         = 'No'
+            default_button        = '2' " Default to 'No'
+            display_cancel_button = abap_true " Display a Cancel button
+          IMPORTING
+            answer                = lv_answer
+          EXCEPTIONS
+            text_not_found        = 1
+            OTHERS                = 2.
+
+        IF sy-subrc IS NOT INITIAL.
+          " Error Handling here...
+        ELSEIF lv_answer EQ '1'.
+
+          " Generate dynamic delete table
+          CREATE DATA lt_delete_table TYPE STANDARD TABLE OF (lv_tabname).
+          ASSIGN lt_delete_table->* TO <lt_delete_table>.
+
+          " Get current data
+          ASSIGN lt_popup_data->* TO <lt_table_popup>.
+
+          " Get the row number
+          lt_rows = lo_selections->get_selected_rows( ).
+
+          IF lines( lt_rows ) > 0.
+
+            LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<lfs_rows>).
+
+              " Read from current table
+              ASSIGN <lt_table_popup>[ <lfs_rows> ]
+              TO FIELD-SYMBOL(<lfs_read_data>).
+
+              IF sy-subrc IS INITIAL.
+                " Add to delete table
+                APPEND <lfs_read_data> TO <lt_delete_table>.
+              ENDIF.
+
+            ENDLOOP.
+
+            " Delete from table
+            IF <lt_delete_table> IS NOT INITIAL.
+
+              DELETE (lv_tabname) FROM TABLE <lt_delete_table>.
+
+              MESSAGE 'Entries Deleted!'
+              TYPE lc_message_types-information
+              DISPLAY LIKE lc_message_types-success.
+
+              FREE: <lt_table_popup>.
+
+              " Get the results from modified data
+              SELECT FROM (lv_tabname)
+                FIELDS *
+                INTO TABLE @<lt_table_popup>.
+
+              lo_popup_alv->refresh( ).
+
+            ENDIF.
+
+          ENDIF.
+
+        ELSE.
+
+          MESSAGE 'Action Cancelled!'
+          TYPE lc_message_types-information
+          DISPLAY LIKE lc_message_types-success.
 
         ENDIF.
 
@@ -346,24 +458,53 @@ CLASS zcl_custom_tables_maintenance IMPLEMENTATION.
 
     DATA: lo_table_description TYPE REF TO cl_abap_tabledescr,
           lo_structure         TYPE REF TO cl_abap_structdescr,
+          lo_columns           TYPE REF TO cl_salv_columns_list,
+          lo_column            TYPE REF TO cl_salv_column_list,
           lt_components        TYPE abap_compdescr_tab.
 
-    " Get the current data
+    " Initialize values
     ASSIGN lt_popup_data->* TO <lt_table_popup>.
+    lo_columns = lo_popup_alv->get_columns( ).
 
     " Get the field names
     lo_table_description ?= cl_abap_typedescr=>describe_by_data( <lt_table_popup> ).
     lo_structure ?= lo_table_description->get_table_line_type( ).
 
-    LOOP AT lo_structure->components[] ASSIGNING FIELD-SYMBOL(<lfs_components>).
+    " Get the field descriptions
+    DATA(lt_table_fields) = NEW ddfields( lo_structure->get_ddic_field_list(  ) ).
+    ASSIGN lt_table_fields->* TO FIELD-SYMBOL(<lfs_table_fields>).
+
+    LOOP AT <lfs_table_fields> ASSIGNING FIELD-SYMBOL(<lfs_components>).
+
+      DATA(lv_is_editable) = abap_true.
 
       TRY.
+
+          " Highlight column if key field
+          IF lv_button_pressed EQ lc_buttons-update AND
+             <lfs_components>-keyflag EQ abap_true.
+
+            lo_column ?= lo_columns->get_column( <lfs_components>-fieldname ).
+            lo_column->set_key( abap_true ).
+
+            lv_is_editable = abap_false.
+
+          ENDIF.
+
+          " Hide MANDT(CLIENT for some) field for all Tables
+          IF <lfs_components>-fieldname EQ 'MANDT' OR
+             <lfs_components>-fieldname EQ 'CLIENT'.
+
+            lo_column ?= lo_columns->get_column( <lfs_components>-fieldname ).
+            lo_column->set_visible( abap_false ).
+
+          ENDIF.
 
           " Set Column to Editable
           lo_popup_alv->extended_grid_api( )->editable_restricted( )->set_attributes_for_columnname(
               EXPORTING
-                  columnname = <lfs_components>-name
-                  all_cells_input_enabled = abap_true
+                  columnname = <lfs_components>-fieldname
+                  all_cells_input_enabled = lv_is_editable
           ).
 
         CATCH cx_salv_not_found INTO DATA(lx_salv_not_found).
